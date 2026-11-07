@@ -1,0 +1,7 @@
+.DS_Store
+Thumbs.db
+desktop.ini
+*.json
+*.csv
+!tracker_data_template.csv
+
