@@ -1,6 +1,6 @@
 # 蜗牛球仿真器
 
-一个可离线运行的蜗牛球简化动力学仿真网页。项目只有一个自包含的 `index.html`，不需要安装依赖，也可以部署到 GitHub Pages。
+一个可离线运行的蜗牛球简化动力学仿真网页。项目只有一个自包含的 `index.html`，不需要安装依赖。
 
 ## 功能
 
@@ -18,30 +18,6 @@
 2. Windows 用户也可以双击 `run_local.bat`。
 
 程序在浏览器本地运行。导入的实验数据和计算结果不会由本页面发送到服务器。浏览器会在当前站点保存参数；更换设备或浏览器时，可通过参数 JSON 导入导出迁移设置。
-
-## 发布到 GitHub
-
-### 用 GitHub 网页上传
-
-1. 在 GitHub 新建一个仓库。
-2. 将本项目文件夹中的文件上传到仓库根目录并提交。
-3. 如果希望通过网页访问，在仓库的 **Settings → Pages** 中选择从 `main` 分支的根目录发布。
-4. 等待 Pages 部署完成后，使用 GitHub 提供的网址打开 `index.html`。
-
-### 用 Git 命令上传
-
-先在 GitHub 新建空仓库，然后在本项目文件夹打开终端运行：
-
-```bash
-git init
-git add .
-git commit -m "Add snail ball simulator"
-git branch -M main
-git remote add origin https://github.com/你的用户名/你的仓库名.git
-git push -u origin main
-```
-
-仓库地址中的用户名和仓库名替换成你刚创建的地址。之后可按上面的 Pages 步骤发布网页。
 
 ## 项目文件
 
