@@ -5,9 +5,10 @@ import re
 
 ROOT = Path(__file__).resolve().parents[1]
 core = (ROOT / 'assets/video-analysis-core.js').read_text(encoding='utf-8')
+tracker = (ROOT / 'assets/video-real-tracker.js').read_text(encoding='utf-8')
 ui = (ROOT / 'assets/video-analysis-ui.js').read_text(encoding='utf-8')
 template = (ROOT / 'src/video-analysis.template.html').read_text(encoding='utf-8')
-analyzer = template.replace('/* CORE_SOURCE */', core).replace('/* UI_SOURCE */', ui)
+analyzer = template.replace('/* CORE_SOURCE */', core).replace('/* REAL_TRACKER_SOURCE */', tracker).replace('/* UI_SOURCE */', ui)
 (ROOT / 'video-analysis.html').write_text(analyzer, encoding='utf-8', newline='\n')
 
 p = ROOT / 'index.html'

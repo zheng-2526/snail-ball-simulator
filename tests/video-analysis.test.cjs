@@ -1,5 +1,6 @@
 const test=require('node:test'),assert=require('node:assert/strict'),fs=require('node:fs'),vm=require('node:vm'),path=require('node:path');
 const C=require('../assets/video-analysis-core.js');
+const Real=require('../assets/video-real-tracker.js');
 const near=(a,b,t=1e-8)=>assert.ok(Math.abs(a-b)<=t,`${a} differs from ${b}`);
 test('local polynomial derivatives recover quadratic motion on irregular real times',()=>{const t=[0,.03,.071,.105,.146,.18,.224,.26,.301];const r=C.smoothDerivative(t,t.map(t=>2+3*t+4*t*t),5);r.forEach((r,i)=>{near(r.value,2+3*t[i]+4*t[i]*t[i]);near(r.derivative,3+8*t[i]);});});
 test('missing frames are not interpolated or differentiated across gaps',()=>{const r=C.smoothDerivative([0,1,2,3,4,5,6],[0,1,NaN,NaN,4,5,6],5);assert.ok(Number.isNaN(r[1].derivative));assert.ok(Number.isNaN(r[2].value));near(r[5].derivative,1);});
@@ -13,5 +14,37 @@ const opts={geometry:{scale:.002,down:{x:1,y:0},normal:{x:0,y:-1}},timeFactor:4,
 test('time scaling, downhill rotation, velocity, and rolling residual agree',()=>{const r=C.processTracks(frames(),opts);near(r.rows[10].v_m_per_s,.16);near(r.rows[10].omega_rad_s,8);near(r.rows[10].slip_residual_m_s,0);near(r.summary.arrival_time_s,.125);near(r.summary.mean_speed_m_per_s,.16);assert.ok(Number.isNaN(r.rows[10].phi_rad));assert.ok(Number.isFinite(r.rows[10].phi_projected_rad));assert.equal(r.rows[10].velocity_source,'local_quadratic');});
 test('verified linear calibration changes inner geometry without changing raw projection',()=>{const r=C.processTracks(frames(),{...opts,refractionConfirmed:true,innerSGain:2,innerNGain:1});near(r.rows[5].phi_rad,Math.atan2(8,8));near(r.rows[5].phi_projected_rad,Math.atan2(4,8));});
 test('not reaching the common finish is reported as not reached',()=>{const r=C.processTracks(frames(),{...opts,distance:2});assert.equal(r.summary.arrival_reached,false);assert.equal(r.summary.mean_speed_m_per_s,null);});
+test('unmeasured scale keeps metric columns empty while two image gates time the passage',()=>{
+  const r=C.processTracks(frames(),{...opts,geometry:{...opts.geometry,scale:null},origin:{x:52,y:50},gateDistancePx:12,timeFactor:1,timingConfirmed:false});
+  near(r.rows[10].x_px,8);near(r.rows[10].v_px_per_s,20);
+  assert.ok(Number.isNaN(r.rows[10].x_m));assert.ok(Number.isNaN(r.rows[10].slip_residual_m_s));
+  near(r.summary.pixel_passage.time_s,.6);assert.equal(r.summary.timing_basis,'video_time');
+});
+test('shell angle hands off through a shared marker and starts a new segment after occlusion',()=>{
+  const f=frames();
+  for(let i=7;i<16;i++){
+    const a=2*f[i].video_time_s+1.5;
+    f[i].shell2={x:f[i].outer.x+10*Math.sin(a),y:50-10*Math.cos(a)};
+  }
+  for(let i=10;i<=16;i++)delete f[i].shell;
+  const r=C.processTracks(f,opts).rows;
+  assert.equal(r[11].shell_angle_segment,r[0].shell_angle_segment);
+  near(r[11].omega_rad_s,8);assert.equal(r[16].shell_angle_segment,null);
+  assert.notEqual(r[17].shell_angle_segment,r[15].shell_angle_segment);
+  near(r[17].shell_angle_rad,0);assert.ok(r[17].quality_flag.includes('shell_angle_segment_restart'));
+});
+test('fixed-camera tracking uses foreground evidence and ignores a static rail',()=>{
+  const w=180,h=100,background={w,h,data:new Float32Array(w*h).fill(.55)};
+  for(let x=0;x<w;x++)background.data[44*w+x]=.12;
+  const image={w,h,data:background.data.slice()};
+  for(let y=0;y<h;y++)for(let x=0;x<w;x++){
+    const d=Math.hypot(x-81,y-48);
+    if((d>9&&d<12)||(d<8&&y<49))image.data[y*w+x]=.94;
+  }
+  const seed={x:52,y:48,radius:11},g={down:{x:1,y:0},normal:{x:0,y:-1}};
+  const found=Real.locate(image,C.gradients(image),background,[{outer:seed,video_time_s:0}],seed,48,g,1/30);
+  near(found.x,81,4);near(found.y,48,4);assert.ok(found.quality>=.65);
+  assert.equal(Real.locate(background,C.gradients(background),background,[],seed,48,g,0),null);
+});
 test('simulator import preserves processed velocity, blanks, and missing rows',()=>{const context={window:{addEventListener(){},opener:null},deriveTracker:null,loadTrackerFile:null,drawChart:null,updateCharts:null,console};vm.createContext(context);vm.runInContext(fs.readFileSync(path.join(__dirname,'../assets/simulator-video-bridge.js'),'utf8'),context);const out=context.deriveTracker([{time_s:0,x_m:0,v_m_per_s:7,velocity_source:'local_quadratic'},{time_s:1,x_m:null,v_m_per_s:null,velocity_source:'local_quadratic',quality_flag:'outer_missing'},{time_s:2,x_m:2,v_m_per_s:8,velocity_source:'local_quadratic'}]);assert.equal(out[0].v_m_per_s,7);assert.ok(Number.isNaN(out[1].x_m));assert.ok(Number.isNaN(out[1].v_m_per_s));assert.equal(out[2].v_m_per_s,8);});
 if(process.env.SNAIL_TEST_MP4)test('local MP4 metadata parser reads encoded frame timing',async()=>{const file=new Blob([fs.readFileSync(process.env.SNAIL_TEST_MP4)]),info=await C.readMp4(file);near(info.encoded_fps,30,.02);assert.equal(info.encoded_frames,90);assert.equal(info.variable_frame_rate,false);});

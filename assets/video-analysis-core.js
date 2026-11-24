@@ -23,7 +23,95 @@
  function smoothDerivative(times,values,window=9){window=Math.max(3,Math.round(window)|1);const out=times.map(()=>({value:NaN,derivative:NaN,edge:true})),dt=median(times.slice(1).map((t,i)=>t-times[i]).filter(v=>v>0));let begin=0;while(begin<times.length){if(!finite(values[begin])){begin++;continue;}let end=begin+1;while(end<times.length&&finite(values[end])&&times[end]>times[end-1]&&times[end]-times[end-1]<=dt*1.9)end++;for(let i=begin;i<end;i++){let lo=Math.max(begin,i-(window>>1)),hi=Math.min(end,lo+window);lo=Math.max(begin,hi-window);if(hi-lo<3)continue;const norm=Math.max(times[hi-1]-times[lo],1e-9),s=[0,0,0,0,0],r=[0,0,0];for(let j=lo;j<hi;j++){const z=(times[j]-times[i])/norm,y=Number(values[j]);let power=1;for(let k=0;k<5;k++){s[k]+=power;power*=z;}r[0]+=y;r[1]+=y*z;r[2]+=y*z*z;}const a=solve3([[s[0],s[1],s[2]],[s[1],s[2],s[3]],[s[2],s[3],s[4]]],r);if(a)out[i]={value:a[0],derivative:a[1]/norm,edge:i-begin<(window>>1)||end-i-1<(window>>1)};}begin=end;}return out;}
  function crossing(rows,target){const gaps=rows.slice(1).map((r,i)=>r.time_s-rows[i].time_s).filter(v=>v>0),maxGap=median(gaps)*1.9;for(let i=1;i<rows.length;i++){const a=rows[i-1],b=rows[i];if(b.time_s-a.time_s>maxGap)continue;if(!finite(a.x_m)||!finite(b.x_m)||a.quality_flag?.includes('outer_missing')||b.quality_flag?.includes('outer_missing'))continue;if(a.x_m<=target&&b.x_m>=target&&b.x_m>a.x_m)return a.time_s+(target-a.x_m)/(b.x_m-a.x_m)*(b.time_s-a.time_s);}return null;}
  function summary(rows,distance){const t0=crossing(rows,0)??(finite(rows[0]?.x_raw_m)&&Math.abs(rows[0].x_raw_m)<1e-6?rows[0].time_s:null),t1=crossing(rows,distance);const eligible=rows.filter(r=>finite(r.v_m_per_s)&&finite(r.x_m)&&r.x_m>=0&&r.x_m<=distance),n=eligible.length;let rms=null;if(n>2){const mt=eligible.reduce((s,r)=>s+r.time_s,0)/n,mv=eligible.reduce((s,r)=>s+r.v_m_per_s,0)/n,den=eligible.reduce((s,r)=>s+(r.time_s-mt)**2,0),b=den?eligible.reduce((s,r)=>s+(r.time_s-mt)*(r.v_m_per_s-mv),0)/den:0;rms=Math.sqrt(eligible.reduce((s,r)=>s+(r.v_m_per_s-(mv+b*(r.time_s-mt)))**2,0)/n);}const arrival=t0!==null&&t1!==null&&t1>t0?t1-t0:null;return {rows:rows.length,valid_position_rows:rows.filter(r=>finite(r.x_m)).length,observation_distance_m:distance,arrival_reached:arrival!==null,arrival_time_s:arrival,mean_speed_m_per_s:arrival?distance/arrival:null,detrended_speed_rms_m_per_s:rms,note:'线性去趋势 RMS 仅作初步比较；未到达时不以较短区间代替。'};}
- function processTracks(frames,options){if(!frames.length)return {rows:[],summary:{}};const g=options.geometry,origin=frames.find(f=>f.outer)?.outer;if(!origin)throw Error('没有有效外球中心。');const times=frames.map(f=>(f.video_time_s-options.start)/options.timeFactor),rawX=frames.map(f=>f.outer?project(f.outer,origin,g).s:NaN),shellAngles=unwrap(frames.map(f=>f.outer&&f.shell?Math.atan2(project(f.shell,f.outer,g).s,-project(f.shell,f.outer,g).n):NaN)),spinAngles=unwrap(frames.map(f=>f.inner&&f.spin?Math.atan2(project(f.spin,f.inner,g).s,-project(f.spin,f.inner,g).n):NaN));const firstShell=shellAngles.find(Number.isFinite)??0,firstSpin=spinAngles.find(Number.isFinite)??0,theta=shellAngles.map(v=>Number.isFinite(v)?-(v-firstShell):NaN),psi=spinAngles.map(v=>Number.isFinite(v)?v-firstSpin:NaN),smooth=smoothDerivative(times,rawX,options.window),angleSmooth=smoothDerivative(times,theta,options.window);const rows=frames.map((f,i)=>{let phi=NaN,d=NaN,correctedPhi=NaN,correctedD=NaN;if(f.outer&&f.inner){const rel=project(f.inner,f.outer,g);phi=Math.atan2(rel.s,-rel.n);d=Math.hypot(rel.s,rel.n);const cs=rel.s*(options.innerSGain??1),cn=rel.n*(options.innerNGain??1);correctedPhi=Math.atan2(cs,-cn);correctedD=Math.hypot(cs,cn);}const v=smooth[i].derivative,omega=angleSmooth[i].derivative,flags=[...(f.flags||[])];if(i>0&&f.shell&&!frames[i-1].shell)flags.push('shell_angle_segment_restart');if(i>0&&f.spin&&!frames[i-1].spin)flags.push('spin_angle_segment_restart');if(!f.outer)flags.push('outer_missing');if(smooth[i].edge)flags.push('derivative_edge');if(f.inner&&!options.refractionConfirmed)flags.push('inner_projected_uncorrected');return {trial_id:options.trialId,time_s:times[i],video_time_s:f.video_time_s,x_m:Number.isFinite(smooth[i].value)?smooth[i].value:NaN,x_raw_m:rawX[i],v_m_per_s:v,velocity_source:'local_quadratic',shell_angle_rad:theta[i],omega_rad_s:omega,phi_rad:options.refractionConfirmed?correctedPhi:NaN,phi_projected_rad:phi,center_distance_m:options.refractionConfirmed?correctedD:NaN,d_projected_m:d,psi_rad:options.refractionConfirmed?psi[i]:NaN,psi_projected_rad:psi[i],slip_residual_m_s:finite(v)&&finite(omega)?v-options.radiusM*omega:NaN,outer_x_px:f.outer?f.outer.x/options.resizeRatio:NaN,outer_y_px:f.outer?f.outer.y/options.resizeRatio:NaN,inner_x_px:f.inner?f.inner.x/options.resizeRatio:NaN,inner_y_px:f.inner?f.inner.y/options.resizeRatio:NaN,shell_marker_x_px:f.shell?f.shell.x/options.resizeRatio:NaN,shell_marker_y_px:f.shell?f.shell.y/options.resizeRatio:NaN,inner_marker_x_px:f.spin?f.spin.x/options.resizeRatio:NaN,inner_marker_y_px:f.spin?f.spin.y/options.resizeRatio:NaN,outer_score:f.scores?.outer??NaN,inner_score:f.scores?.inner??NaN,shell_score:f.scores?.shell??NaN,spin_score:f.scores?.spin??NaN,quality_flag:[...new Set(flags)].join(';')||'ok'};});return {rows,summary:summary(rows,options.distance)};}
+ const shellKeys = ['shell','shell2','shell3'];
+ function shellRotation(frames,g,dt) {
+   let segment=0, angle=0, previous=null;
+   return frames.map((frame,i)=>{
+     const points=new Map();
+     for(const key of shellKeys)if(frame.outer&&frame[key]){
+       const p=project(frame[key],frame.outer,g);
+       if(Math.hypot(p.s,p.n)>1e-8)points.set(key,Math.atan2(p.s,-p.n));
+     }
+     if(!points.size){previous=null;return {angle:NaN,segment:null};}
+     const deltas=[];
+     if(previous&&frame.video_time_s-frames[i-1].video_time_s<=1.9*dt){
+       for(const [key,value] of points)if(previous.has(key)){
+         const raw=previous.get(key)-value;
+         deltas.push(Math.atan2(Math.sin(raw),Math.cos(raw)));
+       }
+     }
+     const advance=deltas.length?median(deltas):NaN;
+     const inconsistent=deltas.some(d=>Math.abs(d-advance)>.35)||Math.abs(advance)>Math.PI*.75;
+     if(!deltas.length||inconsistent){segment++;angle=0;}
+     else angle+=advance;
+     previous=points;
+     return {angle,segment,restarted:i>0&&(!deltas.length||inconsistent),inconsistent};
+   });
+ }
+ function processTracks(frames,options){
+   if(!frames.length)return {rows:[],summary:{}};
+   const g=options.geometry,origin=options.origin||frames.find(f=>f.outer)?.outer;
+   if(!origin)throw Error('没有有效外球中心。');
+   const metric=Number.isFinite(g.scale)&&g.scale>0,ratio=options.resizeRatio||1;
+   const pixels={...g,scale:1/ratio},times=frames.map(f=>(f.video_time_s-options.start)/options.timeFactor);
+   const dt=median(frames.slice(1).map((f,i)=>f.video_time_s-frames[i].video_time_s).filter(t=>t>0));
+   const rawX=frames.map(f=>f.outer?project(f.outer,origin,pixels).s:NaN);
+   const shell=shellRotation(frames,pixels,dt),theta=shell.map(s=>s.angle);
+   const spin=unwrap(frames.map(f=>f.inner&&f.spin?Math.atan2(project(f.spin,f.inner,pixels).s,-project(f.spin,f.inner,pixels).n):NaN));
+   let spinZero=NaN;
+   const smooth=smoothDerivative(times,rawX,options.window),angleSmooth=[];
+   for(let from=0;from<shell.length;){
+     let to=from+1;
+     while(to<shell.length&&shell[to].segment===shell[from].segment)to++;
+     angleSmooth.push(...smoothDerivative(times.slice(from,to),theta.slice(from,to),options.window));
+     from=to;
+   }
+   const metersPerPixel=metric?g.scale*ratio:NaN;
+   const rows=frames.map((f,i)=>{
+     let phi=NaN,d=NaN,correctedPhi=NaN,correctedD=NaN;
+     if(f.outer&&f.inner){
+       const rel=project(f.inner,f.outer,pixels);
+       phi=Math.atan2(rel.s,-rel.n);d=Math.hypot(rel.s,rel.n)*metersPerPixel;
+       const cs=rel.s*(options.innerSGain??1),cn=rel.n*(options.innerNGain??1);
+       correctedPhi=Math.atan2(cs,-cn);correctedD=Math.hypot(cs,cn)*metersPerPixel;
+     }
+     if(!Number.isFinite(spin[i]))spinZero=NaN;
+     else if(!Number.isFinite(spinZero))spinZero=spin[i];
+     const v=smooth[i].derivative*metersPerPixel,omega=angleSmooth[i].derivative;
+     const flags=[...(f.flags||[])];
+     if(shell[i].restarted)flags.push('shell_angle_segment_restart');
+     if(shell[i].inconsistent)flags.push('shell_marker_disagreement');
+     if(i>0&&f.spin&&!frames[i-1].spin)flags.push('spin_angle_segment_restart');
+     if(!f.outer)flags.push('outer_missing');
+     if(smooth[i].edge)flags.push('derivative_edge');
+     if(f.inner&&!options.refractionConfirmed)flags.push('inner_projected_uncorrected');
+     if(!metric)flags.push('scale_unset');
+     if(options.timingConfirmed===false)flags.push('video_time_unconfirmed');
+     const xPx=Number.isFinite(smooth[i].value)?smooth[i].value:rawX[i];
+     return {trial_id:options.trialId,time_s:times[i],video_time_s:f.video_time_s,
+       x_m:xPx*metersPerPixel,x_raw_m:rawX[i]*metersPerPixel,v_m_per_s:v,
+       x_px:xPx,x_raw_px:rawX[i],v_px_per_s:smooth[i].derivative,velocity_source:'local_quadratic',
+       shell_angle_rad:theta[i],shell_angle_segment:shell[i].segment,omega_rad_s:omega,
+       phi_rad:options.refractionConfirmed?correctedPhi:NaN,phi_projected_rad:phi,
+       center_distance_m:options.refractionConfirmed?correctedD:NaN,d_projected_m:d,
+       psi_rad:options.refractionConfirmed?spin[i]-spinZero:NaN,psi_projected_rad:spin[i]-spinZero,
+       slip_residual_m_s:Number.isFinite(options.radiusM)?v-options.radiusM*omega:NaN,
+       outer_x_px:f.outer?f.outer.x/ratio:NaN,outer_y_px:f.outer?f.outer.y/ratio:NaN,
+       inner_x_px:f.inner?f.inner.x/ratio:NaN,inner_y_px:f.inner?f.inner.y/ratio:NaN,
+       ...Object.fromEntries(shellKeys.flatMap((k,j)=>[[j===0?'shell_marker_x_px':`shell_marker_${j+1}_x_px`,f[k]?f[k].x/ratio:NaN],[j===0?'shell_marker_y_px':`shell_marker_${j+1}_y_px`,f[k]?f[k].y/ratio:NaN]])),
+       inner_marker_x_px:f.spin?f.spin.x/ratio:NaN,inner_marker_y_px:f.spin?f.spin.y/ratio:NaN,
+       outer_score:f.scores?.outer??NaN,inner_score:f.scores?.inner??NaN,
+       shell_score:f.scores?.shell??NaN,spin_score:f.scores?.spin??NaN,
+       quality_flag:[...new Set(flags)].join(';')||'ok'};
+   });
+   const pixelRows=rows.map(r=>({...r,x_m:r.x_px,x_raw_m:r.x_raw_px,v_m_per_s:r.v_px_per_s}));
+   const measuredDistance=options.distance??NaN,gateDistance=options.gateDistancePx??NaN;
+   const stats=summary(rows,measuredDistance),pixelStats=summary(pixelRows,gateDistance);
+   stats.valid_position_rows=pixelStats.valid_position_rows;
+   stats.timing_basis=options.timingConfirmed===false?'video_time':'capture_time';
+   stats.pixel_passage={distance_px:gateDistance,time_s:pixelStats.arrival_time_s,mean_speed_px_per_s:pixelStats.mean_speed_m_per_s};
+   return {rows,summary:stats};
+ }
  function csv(rows,fields){const esc=v=>{const s=finite(v)?String(v):typeof v==='string'?v:'';return /[",\r\n]/.test(s)?'"'+s.replace(/"/g,'""')+'"':s;};return [fields.join(','),...rows.map(r=>fields.map(k=>esc(r[k])).join(','))].join('\r\n');}
  // Read MP4/MOV moov metadata locally; encoded FPS is NOT necessarily capture FPS.
  async function readMp4(file){const read=async(off,n)=>new DataView(await file.slice(off,off+n).arrayBuffer()),type=(v,o)=>String.fromCharCode(...new Uint8Array(v.buffer,v.byteOffset+o,4)),u64=(v,o)=>v.getUint32(o)*4294967296+v.getUint32(o+4);let moov=null;for(let off=0;off+8<=file.size;){const h=await read(off,16);let size=h.getUint32(0),head=8;if(size===1){size=u64(h,8);head=16;}if(!size)size=file.size-off;if(size<head||size>file.size-off)break;if(type(h,4)==='moov'){if(size>64*1024*1024)throw Error('视频索引过大，需手动填写采样率。');moov=await read(off,size);break;}off+=size;}if(!moov)return null;
